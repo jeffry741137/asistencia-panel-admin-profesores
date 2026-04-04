@@ -201,146 +201,207 @@ def marcar_faltas_usuario(uid):
     return count
 
 # ── Excel ──────────────────────────────────────────────────────────────────────
-LOGO_B64 = ""  # se puede poner logo en base64 si se desea
+# Logo/insignia en base64 — cada usuario puede tener el suyo (se guarda en DB)
+# Por ahora vacío; si quieres agregar uno por defecto, pon el base64 aquí.
+LOGO_B64 = ""
 
-def generar_excel(uid, anio, mes, salon=""):
-    dias = dias_habiles(anio, mes)
-    mes_nom = MESES_ES[mes]
-    clave = f"{anio}-{mes:02d}"
+# Colores por semana del mes (igual que el Excel original enviado)
+_WEEK_COLORS = ["B8CCE4", "FDE9D9", "D6E3BC", "FDE9D9", "E5DFEC"]
+
+def _color_dia(dia):
+    """Color de fondo según semana del mes (0-indexed semana)."""
+    return _WEEK_COLORS[min((dia - 1) // 7, 4)]
+
+def generar_excel(uid, anio, mes, salon="", institucion="", profesora="", logo_b64=""):
+    """Genera Excel con el formato exacto del archivo de referencia."""
+    dias     = dias_habiles(anio, mes)
+    mes_nom  = MESES_ES[mes]
+    clave    = f"{anio}-{mes:02d}"
+
+    # Datos del usuario
     alumnos_rows = get_alumnos_usuario(uid)
     ALUMNOS = [r["nombre"] for r in alumnos_rows]
-    if not ALUMNOS:
-        ALUMNOS = []
 
-    regs = db_get_asistencia(uid, clave=clave)
+    # Asistencia del mes
+    regs_db = db_get_asistencia(uid, clave=clave)
     data = {}
-    for r in regs:
+    for r in regs_db:
         a = r["alumno"]
         if a not in data:
             data[a] = {}
         data[a][r["dia"]] = {"marca": r["marca"], "hora": r["hora"]}
 
-    grupo1 = ALUMNOS[:15]
-    grupo2 = ALUMNOS[15:]
-    COL_NUM=2; COL_NOM=3; COL_D1=4
-    THIN=Side(style="thin",color="BDBDBD")
-    MEDIUM=Side(style="medium",color="888888")
+    # ── Estilos ──────────────────────────────────────────────────────────────
+    T  = Side(style="thin",   color="000000")
+    M  = Side(style="medium", color="000000")
+    bT = Border(left=T, right=T, top=T, bottom=T)
+    bM = Border(left=M, right=M, top=M, bottom=M)
+    bNM = Border(left=M, right=T, top=T, bottom=T)   # nombre: borde izq grueso
 
+    # ── Workbook ─────────────────────────────────────────────────────────────
     wb = Workbook()
     ws = wb.active
-    ws.title = f"{mes_nom} {anio}"
-    ws.column_dimensions["A"].width = 1.66
-    ws.column_dimensions["B"].width = 2.83
-    ws.column_dimensions["C"].width = 35.5
+    ws.title = mes_nom
+
+    # Columnas: A=margen, B=nombres, C...=días
+    ws.column_dimensions["A"].width = 1.71
+    ws.column_dimensions["B"].width = 38.0
     for i in range(len(dias)):
-        ws.column_dimensions[get_column_letter(COL_D1+i)].width = 4.0
+        ws.column_dimensions[get_column_letter(3 + i)].width = 3.6
 
-    alturas = {1:5.25,2:32,3:35,4:12,5:23,6:3,7:11.25,8:17,9:19}
-    for r,h in alturas.items():
+    # Filas: alturas del Excel de referencia
+    alturas = {1:5.25, 2:25.5, 3:3.0, 4:19.5, 5:14.25, 6:3.0, 7:5.25, 8:15.0, 9:15.0}
+    for r, h in alturas.items():
         ws.row_dimensions[r].height = h
-    for i in range(max(len(grupo1),1)):
-        ws.row_dimensions[10+i].height = 23
-    ws.row_dimensions[25].height = 14.25
-    ws.row_dimensions[27].height = 16
-    ws.row_dimensions[28].height = 17
-    ws.row_dimensions[29].height = 20
-    ws.row_dimensions[30].height = 20
-    for i in range(max(len(grupo2),1)):
-        ws.row_dimensions[31+i].height = 20
+    for idx in range(len(ALUMNOS)):
+        ws.row_dimensions[10 + idx].height = 14.25
 
-    last_col = COL_D1+len(dias)-1
+    # Columna final de días y columnas para salón/mes (derecha del área de días)
+    n_dias    = len(dias)
+    last_dia_col = 2 + n_dias              # índice numérico de la última col de días
+    # Columnas extra a la derecha para salón y mes (2 columnas de 4 celdas c/u)
+    salon_c1 = last_dia_col + 2            # inicio del bloque salón
+    salon_c2 = last_dia_col + 5            # fin del bloque salón
+    mes_c1   = salon_c1                    # comparten inicio (fila 4-5 vs 2-3)
+    mes_c2   = salon_c2
 
-    ws.merge_cells("D2:T2")
-    c = ws["D2"]
-    c.value = salon or "ASISTENCIA"
-    c.font = Font(bold=True, size=20)
+    ldc = get_column_letter(last_dia_col)
+    sc1 = get_column_letter(salon_c1)
+    sc2 = get_column_letter(salon_c2)
+
+    # ── Logo / Insignia ──────────────────────────────────────────────────────
+    logo = logo_b64 or LOGO_B64
+    if logo:
+        try:
+            ld = base64.b64decode(logo)
+            lb = io.BytesIO(ld)
+            li = XLImage(lb)
+            li.width  = 75
+            li.height = 75
+            li.anchor = "A2"
+            ws.add_image(li)
+        except Exception:
+            pass
+
+    # ── Fila 2: Institución + Salón ──────────────────────────────────────────
+    # Institución: C2 → hasta col antes del salón
+    inst_end = get_column_letter(salon_c1 - 1)
+    ws.merge_cells(f"C2:{inst_end}2")
+    c = ws["C2"]
+    c.value     = institucion or salon or "INSTITUCIÓN EDUCATIVA"
+    c.font      = Font(bold=True, size=18)
+    c.alignment = Alignment(horizontal="left", vertical="center")
+
+    # Salón: sc1 fila 2:3 (merge de 2 filas y 4 cols)
+    ws.merge_cells(f"{sc1}2:{sc2}3")
+    c = ws[f"{sc1}2"]
+    c.value     = salon
+    c.font      = Font(bold=True, size=22)
+    c.fill      = PatternFill("solid", fgColor="FFFF00")
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    c.border    = bM
+
+    # ── Fila 4: "ASISTENCIA - AÑO" + Mes ────────────────────────────────────
+    ws.merge_cells(f"B4:{ldc}4")
+    c = ws["B4"]
+    c.value     = f"           ASISTENCIA - {anio}"
+    c.font      = Font(size=15)
     c.alignment = Alignment(horizontal="center", vertical="center")
 
-    ws.merge_cells("W2:Z3")
-    c = ws["W2"]
-    c.value = salon
-    c.font = Font(bold=True, size=48)
-    c.fill = PatternFill("solid", fgColor="FFFF00")
+    # Mes: sc1 fila 4:5
+    ws.merge_cells(f"{sc1}4:{sc2}5")
+    c = ws[f"{sc1}4"]
+    c.value     = mes_nom
+    c.font      = Font(size=16)
+    c.fill      = PatternFill("solid", fgColor="CC99FF")
     c.alignment = Alignment(horizontal="center", vertical="center")
-    c.border = Border(left=MEDIUM, right=MEDIUM, top=MEDIUM, bottom=MEDIUM)
+    c.border    = bM
 
-    ws.merge_cells("F3:R3")
-    c = ws["F3"]
-    c.value = f"ASISTENCIA - {anio}"
-    c.font = Font(bold=True, size=20)
-    c.alignment = Alignment(horizontal="center", vertical="center")
+    # ── Fila 5: Profesora ────────────────────────────────────────────────────
+    ws["B5"].value     = "Profesora:"
+    ws["B5"].font      = Font(size=12)
+    ws["B5"].alignment = Alignment(horizontal="center", vertical="center")
 
-    ws.merge_cells("W4:Z5")
-    c = ws["W4"]
-    c.value = mes_nom
-    c.font = Font(size=16)
-    c.fill = PatternFill("solid", fgColor="CC99FF")
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    c.border = Border(left=MEDIUM, right=MEDIUM, top=MEDIUM, bottom=MEDIUM)
+    ws.merge_cells(f"C5:{ldc}5")
+    c = ws["C5"]
+    c.value     = profesora or ""
+    c.font      = Font(size=12)
+    c.alignment = Alignment(horizontal="left", vertical="center")
 
-    ws.merge_cells(f"C7:{get_column_letter(last_col)}7")
-    ws["C7"].fill = PatternFill("solid", fgColor="D9D9D9")
+    # ── Fila 7: banda gris separadora ────────────────────────────────────────
+    ws.merge_cells(f"B7:{ldc}7")
+    ws["B7"].fill = PatternFill("solid", fgColor="D9D9D9")
 
-    def bloque(fc, fd, fi, grupo, off):
-        ws.merge_cells(f"B{fc}:C{fd}")
-        c = ws.cell(fc, 2, "NOMBRES Y APELLIDOS")
-        c.font = Font(bold=True, size=10)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = Border(left=MEDIUM, right=MEDIUM, top=MEDIUM, bottom=MEDIUM)
+    # ── Filas 8-9: cabecera de días ──────────────────────────────────────────
+    # B8:B9 merge = "NOMBRES Y APELLIDOS"
+    ws.merge_cells("B8:B9")
+    c = ws["B8"]
+    c.value     = "NOMBRES Y APELLIDOS"
+    c.font      = Font(bold=True, size=10)
+    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    c.border    = bM
+
+    for i, d in enumerate(dias):
+        col = get_column_letter(3 + i)
+        bg  = _color_dia(d)
+
+        # Fila 8: letra del día
+        c8 = ws[f"{col}8"]
+        c8.value     = dia_letra(anio, mes, d)
+        c8.font      = Font(size=11)
+        c8.fill      = PatternFill("solid", fgColor=bg)
+        c8.alignment = Alignment(horizontal="center", vertical="center")
+        c8.border    = bT
+
+        # Fila 9: número del día
+        c9 = ws[f"{col}9"]
+        c9.value     = d
+        c9.font      = Font(size=11)
+        c9.fill      = PatternFill("solid", fgColor=bg)
+        c9.alignment = Alignment(horizontal="center", vertical="center")
+        c9.border    = bT
+
+    # ── Filas de alumnos (fila 10 en adelante) ───────────────────────────────
+    for idx, nombre in enumerate(ALUMNOS):
+        fila = 10 + idx
+        ar   = data.get(nombre, {})
+
+        # Columna B: nombre del alumno
+        cn = ws.cell(fila, 2, nombre)
+        cn.font      = Font(size=10)
+        cn.alignment = Alignment(horizontal="left", vertical="center")
+        cn.border    = bNM
+
+        # Columnas de días
         for i, d in enumerate(dias):
-            c = ws.cell(fc, COL_D1+i, dia_letra(anio, mes, d))
-            c.font = Font(size=14)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-        for i, d in enumerate(dias):
-            c = ws.cell(fd, COL_D1+i, d)
-            c.font = Font(size=14)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-        for idx, nombre in enumerate(grupo):
-            fila = fi+idx; num = off+idx+1
-            par = idx % 2 == 0; bg = "FFFFFF" if par else "F2F2F2"
-            c = ws.cell(fila, COL_NUM, num)
-            c.font = Font(size=12)
-            c.alignment = Alignment(vertical="center")
-            c.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-            c.fill = PatternFill("solid", fgColor=bg)
-            c = ws.cell(fila, COL_NOM, nombre)
-            c.font = Font(size=14, color="000000")
-            c.alignment = Alignment(horizontal="left", vertical="center")
-            c.border = Border(left=MEDIUM, right=MEDIUM, top=THIN, bottom=THIN)
-            c.fill = PatternFill("solid", fgColor=bg)
-            ar = data.get(nombre, {})
-            for i, d in enumerate(dias):
-                cell = ws.cell(fila, COL_D1+i)
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-                reg = ar.get(str(d))
-                if reg:
-                    mk = reg["marca"]
-                    if mk=="A":
-                        cell.value="A"; cell.font=Font(bold=True,size=12,color="1B5E20")
-                        cell.fill=PatternFill("solid",fgColor="C8E6C9")
-                    elif mk=="T":
-                        cell.value="T"; cell.font=Font(bold=True,size=12,color="BF360C")
-                        cell.fill=PatternFill("solid",fgColor="FFE0B2")
-                    elif mk=="F":
-                        cell.value="F"; cell.font=Font(bold=True,size=12,color="FFFFFF")
-                        cell.fill=PatternFill("solid",fgColor="C62828")
-                    elif mk=="J":
-                        cell.value="J"; cell.font=Font(bold=True,size=12,color="FFFFFF")
-                        cell.fill=PatternFill("solid",fgColor="1565C0")
-                else:
-                    cell.fill = PatternFill("solid", fgColor=bg)
+            cell = ws.cell(fila, 3 + i)
+            bg   = _color_dia(d)
+            cell.border    = bT
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    if grupo1:
-        bloque(8, 9, 10, grupo1, 0)
-    if grupo2:
-        ws.merge_cells(f"C27:{get_column_letter(last_col)}27")
-        ws["C27"].fill = PatternFill("solid", fgColor="D9D9D9")
-        bloque(29, 30, 31, grupo2, 15)
+            reg = ar.get(str(d))
+            if reg:
+                mk = reg["marca"]
+                if mk == "A":
+                    cell.value = "A"
+                    cell.font  = Font(bold=True, size=11, color="375623")
+                    cell.fill  = PatternFill("solid", fgColor="C6EFCE")
+                elif mk == "T":
+                    cell.value = "T"
+                    cell.font  = Font(bold=True, size=11, color="9C5700")
+                    cell.fill  = PatternFill("solid", fgColor="FFEB9C")
+                elif mk == "F":
+                    cell.value = "F"
+                    cell.font  = Font(bold=True, size=11, color="9C0006")
+                    cell.fill  = PatternFill("solid", fgColor="FFC7CE")
+                elif mk == "J":
+                    cell.value = "J"
+                    cell.font  = Font(bold=True, size=11, color="FFFFFF")
+                    cell.fill  = PatternFill("solid", fgColor="1565C0")
+            else:
+                cell.fill = PatternFill("solid", fgColor=bg)
 
-    ws.freeze_panes = "D10"
+    ws.freeze_panes = "C10"
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -774,10 +835,367 @@ def descargar():
     hoy = info_hoy()
     ano = int(request.args.get("ano", hoy["ano"]))
     mes = int(request.args.get("mes", hoy["mes"]))
-    buf = generar_excel(u["id"], ano, mes, u.get("salon",""))
+    buf = generar_excel(
+        uid=u["id"], anio=ano, mes=mes,
+        salon=u.get("salon",""),
+        institucion=u.get("institucion",""),
+        profesora=u.get("nombre_completo","")
+    )
+    nombre_salon = u.get("salon","salon").replace(" ","_").replace("°","")
     return send_file(buf, as_attachment=True,
-                     download_name=f"asistencia_{u.get('salon','salon')}_{ano}_{mes:02d}.xlsx",
+                     download_name=f"asistencia_{nombre_salon}_{ano}_{mes:02d}.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+def _hacer_qr_card(nombre, salon, institucion, genero="nino"):
+    """Genera una tarjeta QR estilo escolar con diseño profesional."""
+    import qrcode
+    from PIL import Image, ImageDraw, ImageFont
+
+    # ── Dimensiones de la tarjeta ─────────────────────────────────────
+    W, H = 600, 780
+    RADIO = 40           # esquinas redondeadas
+
+    # ── Colores ────────────────────────────────────────────────────────
+    AZUL_OSCURO  = (13,  71, 161)   # #0D47A1
+    AZUL_MEDIO   = (25, 118, 210)   # #1976D2
+    AZUL_CLARO   = (33, 150, 243)   # #2196F3
+    AZUL_CIELO   = (100, 181, 246)  # #64B5F6
+    BLANCO       = (255, 255, 255)
+    AMARILLO     = (255, 214,   0)
+    GRIS_CLARO   = (240, 244, 248)
+
+    # ── Canvas base con fondo degradado azul ──────────────────────────
+    card = Image.new("RGBA", (W, H), (0,0,0,0))
+    draw = ImageDraw.Draw(card)
+
+    # Fondo redondeado degradado manual (azul oscuro → azul claro)
+    for y in range(H):
+        t = y / H
+        r = int(AZUL_OSCURO[0] + (AZUL_CLARO[0]-AZUL_OSCURO[0])*t)
+        g = int(AZUL_OSCURO[1] + (AZUL_CLARO[1]-AZUL_OSCURO[1])*t)
+        b = int(AZUL_OSCURO[2] + (AZUL_CLARO[2]-AZUL_OSCURO[2])*t)
+        draw.rectangle([0, y, W, y+1], fill=(r,g,b,255))
+
+    # Máscara de esquinas redondeadas
+    mask = Image.new("L", (W, H), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle([0, 0, W, H], radius=RADIO, fill=255)
+    card.putalpha(mask)
+
+    draw = ImageDraw.Draw(card)
+
+    # ── Rayos de luz de fondo (círculos concéntricos difusos) ─────────
+    for i in range(8, 0, -1):
+        r_size = i * 60
+        alpha = int(15 + i * 3)
+        overlay = Image.new("RGBA", (W, H), (0,0,0,0))
+        ov_draw = ImageDraw.Draw(overlay)
+        cx, cy = W//2, H//2
+        ov_draw.ellipse([cx-r_size, cy-r_size, cx+r_size, cy+r_size],
+                        fill=(255,255,255,alpha))
+        card = Image.alpha_composite(card, overlay)
+
+    draw = ImageDraw.Draw(card)
+
+    # ── Header azul oscuro con título ─────────────────────────────────
+    hdr_h = 110
+    draw.rounded_rectangle([10, 10, W-10, hdr_h], radius=26,
+                            fill=(13, 60, 144, 230))
+
+    # Texto institución (centrado)
+    inst_txt = (institucion or salon or "INSTITUCIÓN EDUCATIVA").upper()
+    if len(inst_txt) > 32:
+        inst_txt = inst_txt[:30] + "…"
+
+    # Fuente: usamos la default de PIL que siempre existe
+    try:
+        from PIL import ImageFont
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 26)
+        font_name  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
+        font_salon = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+    except Exception:
+        font_title = ImageFont.load_default()
+        font_name  = font_title
+        font_small = font_title
+        font_salon = font_title
+
+    # Icono 🏫 simulado con rectángulo blanco pequeño
+    draw.rectangle([25, 30, 55, 90], fill=(255,255,255,80), outline=BLANCO, width=2)
+    draw.text((40, 60), "🏫", fill=BLANCO, font=font_small, anchor="mm")
+
+    # Título institución
+    draw.text((W//2, 62), inst_txt, fill=BLANCO, font=font_title, anchor="mm")
+
+    # Icono birrete lado derecho (texto emoji)
+    draw.text((W-40, 62), "🎓", fill=BLANCO, font=font_small, anchor="mm")
+
+    # ── Área blanca del QR ────────────────────────────────────────────
+    qr_area_y1 = hdr_h + 18
+    qr_area_y2 = qr_area_y1 + 400
+    qr_area_x1 = 60
+    qr_area_x2 = W - 60
+
+    # Sombra del área QR
+    draw.rounded_rectangle([qr_area_x1+6, qr_area_y1+6, qr_area_x2+6, qr_area_y2+6],
+                            radius=20, fill=(0,0,0,60))
+    draw.rounded_rectangle([qr_area_x1, qr_area_y1, qr_area_x2, qr_area_y2],
+                            radius=20, fill=BLANCO)
+
+    # ── Generar QR ────────────────────────────────────────────────────
+    qr_data = f"ASIST|{salon}|{nombre}"
+    qr = qrcode.QRCode(
+        version=3,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=10,
+        border=2
+    )
+    qr.add_data(qr_data)
+    qr.make(fit=True)
+    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
+
+    # Tamaño del QR dentro del área blanca
+    qr_size = 330
+    qr_img = qr_img.resize((qr_size, qr_size), Image.NEAREST)
+
+    # Centrar QR en el área blanca
+    qr_x = qr_area_x1 + (qr_area_x2 - qr_area_x1 - qr_size) // 2
+    qr_y = qr_area_y1 + (qr_area_y2 - qr_area_y1 - qr_size) // 2
+    card.paste(qr_img, (qr_x, qr_y), qr_img)
+
+    draw = ImageDraw.Draw(card)
+
+    # Destellos en esquinas del área QR (pequeñas estrellas)
+    for sx, sy in [(qr_area_x1+18, qr_area_y1+18),
+                   (qr_area_x2-18, qr_area_y1+18),
+                   (qr_area_x1+18, qr_area_y2-18),
+                   (qr_area_x2-18, qr_area_y2-18)]:
+        draw.text((sx, sy), "✦", fill=AZUL_CIELO, anchor="mm")
+
+    # ── Sección nombre del alumno ─────────────────────────────────────
+    nombre_y1 = qr_area_y2 + 18
+    nombre_y2 = nombre_y1 + 70
+    draw.rounded_rectangle([40, nombre_y1, W-40, nombre_y2],
+                            radius=35, fill=BLANCO)
+    draw.rounded_rectangle([40, nombre_y1, W-40, nombre_y2],
+                            radius=35, outline=AZUL_CIELO, width=2)
+
+    # Parsear nombre: "APELLIDOS, Nombre" → mostrar
+    partes = nombre.split(",")
+    ap = partes[0].strip().upper() if partes else nombre.upper()
+    nm = partes[1].strip().upper() if len(partes) > 1 else ""
+    display_name = f"{ap}, {nm}" if nm else ap
+    if len(display_name) > 30:
+        display_name = display_name[:28] + "…"
+
+    draw.text((W//2, nombre_y1 + 35), display_name,
+              fill=AZUL_OSCURO, font=font_name, anchor="mm")
+
+    # ── Footer azul con decoraciones ─────────────────────────────────
+    footer_y = nombre_y2 + 14
+    draw.rounded_rectangle([10, footer_y, W-10, H-10],
+                            radius=26, fill=(13, 60, 144, 200))
+
+    # Icono verificado (check verde)
+    draw.ellipse([22, footer_y+10, 72, footer_y+60], fill=(67,160,71))
+    draw.text((47, footer_y+35), "✓", fill=BLANCO, font=font_title, anchor="mm")
+
+    # Salón
+    draw.text((W//2, footer_y+35), f"Salón: {salon}",
+              fill=AMARILLO, font=font_salon, anchor="mm")
+
+    # Libros / manzana lado derecho (emoji)
+    draw.text((W-50, footer_y+35), "📚", fill=BLANCO, anchor="mm")
+
+    # ── Borde exterior brillante ──────────────────────────────────────
+    draw_final = ImageDraw.Draw(card)
+    draw_final.rounded_rectangle([2, 2, W-2, H-2], radius=RADIO,
+                                  outline=(255,255,255,120), width=4)
+
+    # Convertir a RGB para PNG final
+    fondo = Image.new("RGB", (W, H), BLANCO)
+    fondo.paste(card, mask=card.split()[3])
+    return fondo
+
+
+@app.route("/generar_qr_alumno")
+def generar_qr_alumno():
+    result = require_login()
+    if isinstance(result, tuple): return result
+    u = result
+    nombre = request.args.get("nombre","").strip()
+    if not nombre:
+        return jsonify({"ok": False, "msg": "Nombre requerido"}), 400
+    try:
+        salon      = u.get("salon","") or "SALON"
+        institucion = u.get("institucion","") or salon
+        alumnos_rows = get_alumnos_usuario(u["id"])
+        genero_map = {r["nombre"]: r["genero"] for r in alumnos_rows}
+        genero = genero_map.get(nombre, "nino")
+        img = _hacer_qr_card(nombre, salon, institucion, genero)
+        buf = io.BytesIO()
+        img.save(buf, "PNG", dpi=(200, 200))
+        buf.seek(0)
+        safe = nombre[:40].replace(" ","_").replace(",","")
+        return send_file(buf, mimetype="image/png",
+                         as_attachment=True,
+                         download_name=f"QR_{safe}.png")
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/generar_qr_zip")
+def generar_qr_zip():
+    """Descarga un ZIP con todos los QRs individuales."""
+    result = require_login()
+    if isinstance(result, tuple): return result
+    u = result
+    try:
+        import zipfile
+        alumnos_rows = get_alumnos_usuario(u["id"])
+        if not alumnos_rows:
+            return jsonify({"ok": False, "msg": "No tienes alumnos"}), 400
+        salon       = u.get("salon","") or "SALON"
+        institucion = u.get("institucion","") or salon
+        genero_map  = {r["nombre"]: r["genero"] for r in alumnos_rows}
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for alumno in alumnos_rows:
+                nombre = alumno["nombre"]
+                genero = alumno.get("genero","nino")
+                img = _hacer_qr_card(nombre, salon, institucion, genero)
+                img_buf = io.BytesIO()
+                img.save(img_buf, "PNG", dpi=(200,200))
+                img_buf.seek(0)
+                safe = nombre[:40].replace(" ","_").replace(",","")
+                zf.writestr(f"QR_{safe}.png", img_buf.read())
+
+        zip_buf.seek(0)
+        salon_clean = salon.replace(" ","_").replace("°","")
+        return send_file(zip_buf, as_attachment=True,
+                         download_name=f"QRs_{salon_clean}.zip",
+                         mimetype="application/zip")
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/auth/cambiar_password", methods=["POST"])
+def user_cambiar_password():
+    result = require_login()
+    if isinstance(result, tuple): return result
+    u = result
+    if u.get("is_creator"):
+        return jsonify({"ok": False, "msg": "El creador usa otro método"})
+    data = request.get_json(force=True)
+    actual = (data.get("actual") or "").strip()
+    nueva  = (data.get("nueva")  or "").strip()
+    if not actual or not nueva:
+        return jsonify({"ok": False, "msg": "Completa todos los campos"})
+    if len(nueva) < 6:
+        return jsonify({"ok": False, "msg": "Nueva contraseña mínimo 6 caracteres"})
+    row = db_exec("SELECT password_hash FROM usuarios WHERE id=%s", (u["id"],), fetch="one")
+    if not row or hash_pass(actual) != row["password_hash"]:
+        return jsonify({"ok": False, "msg": "Contraseña actual incorrecta"})
+    db_exec("UPDATE usuarios SET password_hash=%s WHERE id=%s", (hash_pass(nueva), u["id"]))
+    return jsonify({"ok": True, "msg": "Contraseña actualizada correctamente"})
+
+@app.route("/admin/cambiar_password", methods=["POST"])
+def admin_cambiar_password():
+    u = get_current_user()
+    if not u or not u.get("is_creator"):
+        return jsonify({"ok": False, "msg": "No autorizado"}), 403
+    data = request.get_json(force=True)
+    uid   = data.get("id")
+    nueva = (data.get("nueva_password") or "").strip()
+    if not uid or not nueva or len(nueva) < 6:
+        return jsonify({"ok": False, "msg": "Datos incompletos o contraseña muy corta"})
+    db_exec("UPDATE usuarios SET password_hash=%s WHERE id=%s", (hash_pass(nueva), uid))
+    return jsonify({"ok": True, "msg": "Contraseña actualizada"})
+
+@app.route("/admin/ver_usuario/<int:uid>")
+def admin_ver_usuario(uid):
+    u = get_current_user()
+    if not u or not u.get("is_creator"):
+        return jsonify({"ok": False, "msg": "No autorizado"}), 403
+    usuario = db_exec("SELECT * FROM usuarios WHERE id=%s", (uid,), fetch="one")
+    if not usuario:
+        return jsonify({"ok": False, "msg": "Usuario no encontrado"})
+    alumnos = get_alumnos_usuario(uid)
+    hoy = info_hoy()
+    clave_hoy = f"{hoy['ano']}-{hoy['mes']:02d}"
+    regs_hoy = db_get_asistencia(uid, clave=clave_hoy, dia=str(hoy["dia"]))
+    pres_hoy = sum(1 for r in regs_hoy if r["marca"] in ["A","T","J"])
+    meses_resumen = []
+    for mes in range(1, 13):
+        clave = f"{hoy['ano']}-{mes:02d}"
+        regs  = db_get_asistencia(uid, clave=clave)
+        total = sum(1 for r in regs if r["marca"] in ["A","T"])
+        if total > 0:
+            meses_resumen.append({"mes": MESES_ES[mes], "registros": total})
+    return jsonify({"ok": True,
+        "usuario": {"username": usuario["username"],
+                    "nombre_completo": usuario["nombre_completo"],
+                    "salon": usuario["salon"],
+                    "institucion": usuario["institucion"],
+                    "activo": usuario["activo"]},
+        "alumnos": alumnos,
+        "presentes_hoy": pres_hoy,
+        "total_alumnos": len(alumnos),
+        "meses_resumen": meses_resumen})
+
+@app.route("/admin/descargar_excel/<int:uid>")
+def admin_descargar_excel(uid):
+    u = get_current_user()
+    if not u or not u.get("is_creator"):
+        return jsonify({"ok": False, "msg": "No autorizado"}), 403
+    usuario = db_exec("SELECT * FROM usuarios WHERE id=%s", (uid,), fetch="one")
+    if not usuario:
+        return jsonify({"ok": False, "msg": "No encontrado"})
+    hoy = info_hoy()
+    ano = int(request.args.get("ano", hoy["ano"]))
+    mes = int(request.args.get("mes", hoy["mes"]))
+    buf = generar_excel(uid=uid, anio=ano, mes=mes,
+                        salon=usuario.get("salon",""),
+                        institucion=usuario.get("institucion",""),
+                        profesora=usuario.get("nombre_completo",""))
+    salon_clean = (usuario.get("salon","salon")).replace(" ","_").replace("°","")
+    return send_file(buf, as_attachment=True,
+                     download_name=f"asistencia_{salon_clean}_{ano}_{mes:02d}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+@app.route("/alumnos/importar_masivo", methods=["POST"])
+def alumnos_importar_masivo():
+    result = require_login()
+    if isinstance(result, tuple): return result
+    u = result
+    if u.get("is_creator"):
+        return jsonify({"ok": False, "msg": "El creador no gestiona alumnos"})
+    data   = request.get_json(force=True)
+    texto  = (data.get("texto") or "").strip()
+    genero_default = data.get("genero_default", "nino")
+    if not texto:
+        return jsonify({"ok": False, "msg": "Texto vacío"})
+    lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+    max_orden = db_exec(
+        "SELECT COALESCE(MAX(orden),0) AS m FROM alumnos WHERE usuario_id=%s",
+        (u["id"],), fetch="one")
+    orden = (max_orden["m"] if max_orden else 0) + 1
+    agregados = 0; errores = []
+    for linea in lineas:
+        genero = genero_default; nombre = linea
+        if linea.upper().startswith("H:"):  genero = "nino"; nombre = linea[2:].strip()
+        elif linea.upper().startswith("M:"): genero = "nina"; nombre = linea[2:].strip()
+        if not nombre: continue
+        try:
+            db_exec("INSERT INTO alumnos (usuario_id,nombre,genero,orden) VALUES (%s,%s,%s,%s)",
+                    (u["id"], nombre, genero, orden))
+            agregados += 1; orden += 1
+        except Exception:
+            errores.append(nombre)
+    return jsonify({"ok": True, "agregados": agregados, "errores": errores,
+                    "msg": f"Se agregaron {agregados} alumnos" +
+                           (f" ({len(errores)} ya existían)" if errores else "")})
 
 @app.route("/manifest.json")
 def manifest():
@@ -998,6 +1416,22 @@ header p{font-size:.72rem;color:#90caf9;margin-top:3px}
 .input-num{width:70px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:8px;color:#fff;font-size:.9rem;font-family:inherit;outline:none;text-align:center}
 .btn-formar{flex:1;padding:9px;background:linear-gradient(135deg,#1a237e,#3949ab);color:#fff;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-family:inherit;font-size:.85rem}
 .btn-regen{width:100%;padding:8px;background:rgba(91,107,240,.18);color:#7986cb;border:1px solid rgba(91,107,240,.3);border-radius:9px;font-weight:700;cursor:pointer;font-family:inherit;font-size:.83rem;margin-top:7px;display:none}
+/* QR Cards */
+.qr-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:6px}
+.qr-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;align-items:center;padding:10px 8px 8px}
+.qr-preview{width:100%;border-radius:8px;display:block;background:#fff;aspect-ratio:600/780;object-fit:cover}
+.qr-card-name{font-size:.7rem;color:#cfd8dc;font-weight:600;margin:6px 0 4px;text-align:center;line-height:1.3;min-height:2.4em}
+.btn-qr-dl{width:100%;padding:6px 8px;background:rgba(25,118,210,.25);color:#64b5f6;border:1px solid rgba(33,150,243,.35);border-radius:7px;font-size:.72rem;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:none;display:block;text-align:center}
+.btn-qr-todos{width:100%;padding:12px;background:linear-gradient(135deg,#0d47a1,#1976d2);color:#fff;border:none;border-radius:10px;font-size:.9rem;font-weight:700;cursor:pointer;font-family:inherit}
+.qr-loading{text-align:center;color:#546e7a;font-size:.82rem;padding:20px 0}
+/* Modal admin */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center;padding:16px}
+.modal-overlay.show{display:flex}
+.modal-box{background:#0d1b2a;border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:20px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto}
+.modal-title{font-size:1rem;font-weight:700;color:#fff;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
+.modal-close{background:none;border:none;color:#90a4ae;font-size:1.3rem;cursor:pointer;padding:0 4px}
+.modal-stat{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.07);font-size:.83rem}
+.modal-stat:last-child{border:none}
 </style>
 </head>
 <body>
@@ -1205,6 +1639,22 @@ header p{font-size:.72rem;color:#90caf9;margin-top:3px}
       </div>
     </div>
 
+    <!-- QR de alumnos -->
+    <div class="seccion">
+      <button class="sec-btn" onclick="toggleSec('sec-qr',this);iniciarQRs()">
+        📲 QR de asistencia por alumno <span class="arrow">▼</span>
+      </button>
+      <div id="sec-qr" class="sec-content">
+        <div style="margin-bottom:10px">
+          <button id="btn-dl-zip" class="btn-qr-todos" onclick="descargarZip()" style="display:none">
+            ⬇️ Descargar TODOS los QRs (ZIP — uno por alumno)
+          </button>
+          <div id="qr-zip-msg" style="font-size:.78rem;color:#90a4ae;text-align:center;margin-top:4px"></div>
+        </div>
+        <div id="qr-grid" class="qr-grid"><div class="empty-msg">Presiona para ver los QRs</div></div>
+      </div>
+    </div>
+
     <!-- Mis alumnos -->
     <div class="seccion">
       <button class="sec-btn" onclick="toggleSec('sec-alumnos',this);cargarAlumnosGestor()">
@@ -1225,8 +1675,41 @@ header p{font-size:.72rem;color:#90caf9;margin-top:3px}
           <div class="mlabel" style="margin-top:8px">Lista de alumnos</div>
           <div id="ag-list" class="ag-list"><div class="empty-msg">Sin alumnos aún</div></div>
         </div>
+
+        <!-- Importar lista masiva -->
+        <div style="margin-top:12px;background:rgba(91,107,240,.06);border:1px solid rgba(91,107,240,.2);border-radius:10px;padding:12px">
+          <div class="mlabel" style="color:#9fa8da">📋 Importar lista completa (rápido)</div>
+          <div style="font-size:.72rem;color:#78909c;margin-bottom:8px;line-height:1.6">
+            Un alumno por línea. Prefijos opcionales:<br>
+            <code style="color:#ce93d8">H: Apellido, Nombre</code> = niño &nbsp;|&nbsp; <code style="color:#f48fb1">M: Apellido, Nombre</code> = niña
+          </div>
+          <select id="import-genero" class="ag-select" style="width:100%;margin-bottom:8px">
+            <option value="nino">Género por defecto: 👦 Niño</option>
+            <option value="nina">Género por defecto: 👧 Niña</option>
+          </select>
+          <textarea id="import-texto" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:10px;color:#fff;font-size:.82rem;font-family:monospace;outline:none;resize:vertical;min-height:110px;margin-bottom:8px" placeholder="Pega aquí la lista..."></textarea>
+          <button class="ag-btn" style="width:100%;padding:10px" onclick="importarMasivo()">📥 Importar lista</button>
+          <div id="import-msg" style="font-size:.78rem;margin-top:6px;display:none"></div>
+        </div>
       </div>
     </div>
+
+    <!-- Cambiar contraseña -->
+    <div class="seccion">
+      <button class="sec-btn" onclick="toggleSec('sec-pwd',this)">
+        🔑 Cambiar mi contraseña <span class="arrow">▼</span>
+      </button>
+      <div id="sec-pwd" class="sec-content">
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
+          <input type="password" id="pwd-actual" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:10px 12px;color:#fff;font-size:.88rem;font-family:inherit;outline:none" placeholder="Contraseña actual">
+          <input type="password" id="pwd-nueva" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:10px 12px;color:#fff;font-size:.88rem;font-family:inherit;outline:none" placeholder="Nueva contraseña (mín. 6 caracteres)">
+          <input type="password" id="pwd-confirma" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:10px 12px;color:#fff;font-size:.88rem;font-family:inherit;outline:none" placeholder="Confirmar nueva contraseña">
+          <button onclick="cambiarPassword()" style="padding:11px;background:linear-gradient(135deg,#1565c0,#1976d2);color:#fff;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-family:inherit;font-size:.88rem">Actualizar contraseña</button>
+          <div id="pwd-msg" style="font-size:.8rem;display:none;padding:4px 0"></div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /vista-normal -->
 
 </div><!-- /wrap -->
@@ -1390,7 +1873,8 @@ async function cargarUsuariosAdmin(){
             ? `<button class="btn-toggle btn-desactivar" onclick="toggleUsuario(${u.id},false)">🔒 Desactivar</button>`
             : `<button class="btn-toggle btn-activar" onclick="toggleUsuario(${u.id},true)">✅ Activar</button>`
           }
-          <button class="btn-eliminar" onclick="eliminarUsuario(${u.id},'${u.username}')">🗑</button>
+          <button class="btn-toggle" style="background:rgba(33,150,243,.15);color:#64b5f6;border:1px solid rgba(33,150,243,.3)" onclick="verUsuario(${u.id},'${u.username.replace(/'/g,"\\'")}')">👁 Ver</button>
+          <button class="btn-eliminar" onclick="eliminarUsuario(${u.id},'${u.username.replace(/'/g,"\\'")}')">🗑</button>
         </div>
       </div>
     `).join('');
@@ -1480,53 +1964,98 @@ function tick(){
 }
 
 // ═══════════════════════════════════════════════════════
-// BÚSQUEDA
+// BÚSQUEDA — versión robusta con data-attributes
 // ═══════════════════════════════════════════════════════
 function norm(s){return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');}
 
-function mostrarSugs(q, listaId, onSelectFn){
-  const sug=document.getElementById(listaId);
-  if(!q||q.length<1){sug.className='sugs';sug.innerHTML='';return;}
-  const qn=norm(q);
-  const matches=ALUMNOS_JS.filter(a=>norm(a).includes(qn)).slice(0,8);
-  if(!matches.length){sug.className='sugs';sug.innerHTML='';return;}
-  sug.className='sugs show';
-  sug.innerHTML=matches.map(a=>{
-    const p=a.split(',');const ap=p[0]||'';const nm=p[1]?p[1].trim():'';
-    const label=nm+' '+ap;
-    return `<div class="sug-item" onmousedown="event.preventDefault()" onclick="(${onSelectFn.toString()})(${JSON.stringify(a)})"><div class="sug-nm">${label}</div><div class="sug-hint">${a}</div></div>`;
-  }).join('');
+function _crearSugs(q, listaId){
+  const sug = document.getElementById(listaId);
+  sug.innerHTML = '';
+  if(!q || q.length < 1){ sug.className='sugs'; return; }
+  const qn = norm(q);
+  const matches = ALUMNOS_JS.filter(a => norm(a).includes(qn)).slice(0,8);
+  if(!matches.length){ sug.className='sugs'; return; }
+  sug.className = 'sugs show';
+  matches.forEach(a => {
+    const p = a.split(',');
+    const ap = p[0]?.trim() || '';
+    const nm = p[1]?.trim() || '';
+    const label = nm ? nm+' '+ap : ap;
+    const div = document.createElement('div');
+    div.className = 'sug-item';
+    div.innerHTML = `<div class="sug-nm">${label}</div><div class="sug-hint">${a}</div>`;
+    // Guardar nombre exacto en data attribute — evita todos los problemas de escape
+    div.dataset.nombre = a;
+    div.addEventListener('pointerdown', e => e.preventDefault());
+    div.addEventListener('click', e => {
+      const target = e.currentTarget;
+      const nombre = target.dataset.nombre;
+      const origen = sug.dataset.origen; // 'manual' o 'just'
+      if(origen === 'manual'){
+        _selManual(nombre);
+      } else {
+        _selJust(nombre);
+      }
+    });
+    sug.appendChild(div);
+  });
+}
+
+// Registro manual
+function _selManual(nombre){
+  alumnoSel = nombre;
+  const p = nombre.split(',');
+  const ap = p[0]?.trim() || '';
+  const nm = p[1]?.trim() || '';
+  document.getElementById('mi').value = nm ? nm+' '+ap : ap;
+  const sug = document.getElementById('sugs');
+  sug.className = 'sugs';
+  sug.innerHTML = '';
+  document.getElementById('mi').blur();
 }
 
 function buscarAlumnoManual(q){
-  alumnoSel=null;
-  mostrarSugs(q,'sugs',function(nombre){
-    alumnoSel=nombre;
-    document.getElementById('mi').value=nombre;
-    document.getElementById('sugs').className='sugs';
-    document.getElementById('sugs').innerHTML='';
-  });
+  alumnoSel = null;
+  const sug = document.getElementById('sugs');
+  sug.dataset.origen = 'manual';
+  _crearSugs(q, 'sugs');
 }
 
 function regManualSel(){
-  const nombre=alumnoSel||document.getElementById('mi').value.trim();
+  const nombre = alumnoSel || document.getElementById('mi').value.trim();
   if(!nombre) return;
   enviar(nombre);
-  document.getElementById('mi').value='';
-  alumnoSel=null;
-  document.getElementById('sugs').className='sugs';
-  document.getElementById('sugs').innerHTML='';
+  document.getElementById('mi').value = '';
+  alumnoSel = null;
+  const sug = document.getElementById('sugs');
+  sug.className = 'sugs';
+  sug.innerHTML = '';
+}
+
+// También registrar al presionar Enter en el input manual
+document.addEventListener('DOMContentLoaded', () => {
+  const mi = document.getElementById('mi');
+  if(mi) mi.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); regManualSel(); } });
+});
+
+// Justificación
+function _selJust(nombre){
+  alumnoJustSel = nombre;
+  const p = nombre.split(',');
+  const ap = p[0]?.trim() || '';
+  const nm = p[1]?.trim() || '';
+  document.getElementById('mi-just').value = nm ? nm+' '+ap : ap;
+  const sug = document.getElementById('sugs-just');
+  sug.className = 'sugs';
+  sug.innerHTML = '';
+  setTimeout(() => document.getElementById('texto-just').focus(), 50);
 }
 
 function buscarJust(q){
-  alumnoJustSel=null;
-  mostrarSugs(q,'sugs-just',function(nombre){
-    alumnoJustSel=nombre;
-    document.getElementById('mi-just').value=nombre;
-    document.getElementById('sugs-just').className='sugs';
-    document.getElementById('sugs-just').innerHTML='';
-    document.getElementById('texto-just').focus();
-  });
+  alumnoJustSel = null;
+  const sug = document.getElementById('sugs-just');
+  sug.dataset.origen = 'just';
+  _crearSugs(q, 'sugs-just');
 }
 
 async function guardarJustificacion(){
@@ -1843,6 +2372,218 @@ async function cargarMeses(){
 
 function descargarMes(mes,ano){window.location.href='/descargar?ano='+ano+'&mes='+mes;}
 function dlExcel(){const n=new Date();window.location.href='/descargar?ano='+n.getFullYear()+'&mes='+(n.getMonth()+1);}
+
+// ═══════════════════════════════════════════════════════
+// QR DE ALUMNOS
+// ═══════════════════════════════════════════════════════
+let qrsInicializados = false;
+
+async function iniciarQRs(){
+  if(qrsInicializados) return;
+  qrsInicializados = true;
+  cargarQRs();
+}
+
+async function cargarQRs(){
+  const el = document.getElementById('qr-grid');
+  if(!ALUMNOS_JS.length){
+    el.innerHTML='<div class="empty-msg">No tienes alumnos aún. Agrégalos primero.</div>';
+    return;
+  }
+  document.getElementById('btn-dl-zip').style.display = 'block';
+  document.getElementById('qr-zip-msg').textContent = `${ALUMNOS_JS.length} QRs disponibles para descargar`;
+
+  // Mostrar previsualizaciones usando <img> con src al endpoint
+  el.innerHTML = ALUMNOS_JS.map(nombre => {
+    const partes = nombre.split(',');
+    const ap = partes[0]?.trim() || '';
+    const nm = partes[1]?.trim() || '';
+    const label = nm ? nm+' '+ap : ap;
+    const short = label.length > 24 ? label.substring(0,22)+'…' : label;
+    const url = '/generar_qr_alumno?nombre=' + encodeURIComponent(nombre);
+    return `<div class="qr-card">
+      <img class="qr-preview" src="${url}" alt="QR ${label}" loading="lazy"
+           onerror="this.style.background='#1a237e';this.alt='Error'">
+      <div class="qr-card-name">${short}</div>
+      <a href="${url}" download="QR_${ap.replace(/\s/g,'_')}.png" class="btn-qr-dl">⬇ Descargar</a>
+    </div>`;
+  }).join('');
+}
+
+function descargarZip(){
+  const btn = document.getElementById('btn-dl-zip');
+  const msg = document.getElementById('qr-zip-msg');
+  btn.textContent = '⏳ Generando ZIP...';
+  btn.disabled = true;
+  msg.textContent = 'Esto puede tardar unos segundos...';
+  // Usar fetch con blob para manejar el progreso
+  fetch('/generar_qr_zip', {credentials:'include'})
+    .then(r => {
+      if(!r.ok) throw new Error('Error generando ZIP');
+      return r.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'QRs_asistencia.zip';
+      a.click();
+      URL.revokeObjectURL(url);
+      btn.textContent = '⬇️ Descargar TODOS los QRs (ZIP — uno por alumno)';
+      btn.disabled = false;
+      msg.textContent = '✅ ZIP descargado correctamente';
+      setTimeout(()=>{ msg.textContent = `${ALUMNOS_JS.length} QRs disponibles`; }, 4000);
+    })
+    .catch(e => {
+      btn.textContent = '⬇️ Descargar TODOS los QRs (ZIP — uno por alumno)';
+      btn.disabled = false;
+      msg.textContent = '❌ Error: '+e.message;
+    });
+}
+
+// ═══════════════════════════════════════════════════════
+// IMPORTAR MASIVO
+// ═══════════════════════════════════════════════════════
+async function importarMasivo(){
+  const texto = document.getElementById('import-texto').value;
+  const genero_default = document.getElementById('import-genero').value;
+  const msgEl = document.getElementById('import-msg');
+  msgEl.style.display = 'none';
+  if(!texto.trim()){
+    msgEl.textContent='Pega la lista de alumnos primero';
+    msgEl.style.color='#ef9a9a'; msgEl.style.display='block'; return;
+  }
+  try{
+    const r = await fetch('/alumnos/importar_masivo',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({texto,genero_default})});
+    const d = await r.json();
+    if(d.ok){
+      msgEl.textContent = '✅ '+d.msg;
+      msgEl.style.color = '#81c784';
+      document.getElementById('import-texto').value = '';
+      cargarAlumnosGestor();
+      cargarAlumnosJS();
+      qrsInicializados = false; // forzar recarga de QRs
+    } else {
+      msgEl.textContent = '❌ '+d.msg;
+      msgEl.style.color = '#ef9a9a';
+    }
+    msgEl.style.display = 'block';
+  }catch(e){
+    msgEl.textContent = 'Error de conexión';
+    msgEl.style.color = '#ef9a9a'; msgEl.style.display = 'block';
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// CAMBIAR CONTRASEÑA (usuario)
+// ═══════════════════════════════════════════════════════
+async function cambiarPassword(){
+  const actual   = document.getElementById('pwd-actual').value.trim();
+  const nueva    = document.getElementById('pwd-nueva').value.trim();
+  const confirma = document.getElementById('pwd-confirma').value.trim();
+  const msgEl    = document.getElementById('pwd-msg');
+  msgEl.style.display = 'none';
+  if(!actual||!nueva||!confirma){
+    msgEl.textContent='Completa todos los campos';msgEl.style.color='#ef9a9a';msgEl.style.display='block';return;
+  }
+  if(nueva !== confirma){
+    msgEl.textContent='Las nuevas contraseñas no coinciden';msgEl.style.color='#ef9a9a';msgEl.style.display='block';return;
+  }
+  try{
+    const r = await fetch('/auth/cambiar_password',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({actual,nueva})});
+    const d = await r.json();
+    if(d.ok){
+      msgEl.textContent='✅ '+d.msg; msgEl.style.color='#81c784';
+      document.getElementById('pwd-actual').value='';
+      document.getElementById('pwd-nueva').value='';
+      document.getElementById('pwd-confirma').value='';
+    } else {
+      msgEl.textContent='❌ '+d.msg; msgEl.style.color='#ef9a9a';
+    }
+    msgEl.style.display = 'block';
+  }catch(e){ msgEl.textContent='Error de conexión';msgEl.style.color='#ef9a9a';msgEl.style.display='block'; }
+}
+
+// ═══════════════════════════════════════════════════════
+// ADMIN — VER USUARIO EN MODAL
+// ═══════════════════════════════════════════════════════
+async function verUsuario(uid, username){
+  // Crear modal si no existe
+  let overlay = document.getElementById('modal-admin');
+  if(!overlay){
+    overlay = document.createElement('div');
+    overlay.id = 'modal-admin';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal-box">
+      <div class="modal-title"><span id="modal-admin-titulo"></span>
+        <button class="modal-close" onclick="document.getElementById('modal-admin').className='modal-overlay'">✕</button>
+      </div>
+      <div id="modal-admin-cuerpo"></div>
+    </div>`;
+    overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.className='modal-overlay'; });
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('modal-admin-titulo').textContent = '👤 '+username;
+  document.getElementById('modal-admin-cuerpo').innerHTML = '<div class="empty-msg">Cargando...</div>';
+  overlay.className = 'modal-overlay show';
+
+  try{
+    const r = await fetch('/admin/ver_usuario/'+uid,{credentials:'include'});
+    const d = await r.json();
+    if(!d.ok){ document.getElementById('modal-admin-cuerpo').innerHTML='<div class="empty-msg">'+d.msg+'</div>'; return; }
+    const u = d.usuario;
+    const mesesHtml = d.meses_resumen?.length
+      ? d.meses_resumen.map(m=>`<span style="background:rgba(76,175,80,.15);color:#81c784;padding:3px 8px;border-radius:12px;font-size:.72rem">${m.mes}: ${m.registros}</span>`).join(' ')
+      : '<span style="color:#546e7a;font-size:.78rem">Sin registros</span>';
+    const alumnosHtml = d.alumnos?.length
+      ? `<div style="max-height:130px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:4px">${d.alumnos.map(a=>`<div style="font-size:.77rem;padding:3px 8px;background:rgba(255,255,255,.04);border-radius:6px">${a.genero==='nino'?'👦':'👧'} ${a.nombre}</div>`).join('')}</div>`
+      : '<div class="empty-msg">Sin alumnos</div>';
+    document.getElementById('modal-admin-cuerpo').innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
+        <div class="modal-stat"><span style="color:#90a4ae">Nombre</span><span>${u.nombre_completo||'—'}</span></div>
+        <div class="modal-stat"><span style="color:#90a4ae">Salón</span><span>${u.salon||'—'}</span></div>
+        <div class="modal-stat"><span style="color:#90a4ae">Institución</span><span style="font-size:.78rem">${u.institucion||'—'}</span></div>
+        <div class="modal-stat"><span style="color:#90a4ae">Estado</span><span style="color:${u.activo?'#81c784':'#ef9a9a'}">${u.activo?'✅ Activo':'🔒 Desactivado'}</span></div>
+        <div class="modal-stat"><span style="color:#90a4ae">Presentes hoy</span><strong>${d.presentes_hoy} / ${d.total_alumnos}</strong></div>
+      </div>
+      <div style="font-size:.72rem;color:#78909c;font-weight:700;margin-bottom:5px">MESES CON REGISTROS</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px">${mesesHtml}</div>
+      <div style="font-size:.72rem;color:#78909c;font-weight:700;margin-bottom:4px">ALUMNOS (${d.total_alumnos})</div>
+      ${alumnosHtml}
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <button onclick="adminDescargarExcel(${uid})" style="flex:1;padding:9px;background:rgba(46,125,50,.2);color:#81c784;border:1px solid rgba(76,175,80,.3);border-radius:8px;font-size:.8rem;font-weight:700;cursor:pointer;font-family:inherit">⬇ Excel mes actual</button>
+      </div>
+      <div style="margin-top:10px">
+        <div style="font-size:.72rem;color:#78909c;margin-bottom:5px;font-weight:700">CAMBIAR CONTRASEÑA</div>
+        <input type="password" id="admin-nueva-pwd-${uid}" placeholder="Nueva contraseña (mín. 6)"
+          style="width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:9px 12px;color:#fff;font-size:.88rem;font-family:inherit;outline:none;margin-bottom:6px">
+        <button onclick="adminCambiarPwd(${uid})" style="width:100%;padding:9px;background:rgba(255,152,0,.2);color:#ffb74d;border:1px solid rgba(255,152,0,.3);border-radius:8px;font-size:.8rem;font-weight:700;cursor:pointer;font-family:inherit">🔑 Actualizar contraseña</button>
+        <div id="admin-pwd-msg-${uid}" style="font-size:.78rem;margin-top:4px"></div>
+      </div>`;
+  }catch(e){ document.getElementById('modal-admin-cuerpo').innerHTML='<div class="empty-msg">Error de conexión</div>'; }
+}
+
+async function adminCambiarPwd(uid){
+  const inp = document.getElementById('admin-nueva-pwd-'+uid);
+  const msg = document.getElementById('admin-pwd-msg-'+uid);
+  const nueva = inp.value.trim();
+  if(!nueva||nueva.length<6){ msg.textContent='❌ Mínimo 6 caracteres'; msg.style.color='#ef9a9a'; return; }
+  try{
+    const r = await fetch('/admin/cambiar_password',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({id:uid,nueva_password:nueva})});
+    const d = await r.json();
+    msg.textContent = d.ok ? '✅ '+d.msg : '❌ '+d.msg;
+    msg.style.color = d.ok ? '#81c784' : '#ef9a9a';
+    if(d.ok) inp.value='';
+  }catch(e){ msg.textContent='Error'; msg.style.color='#ef9a9a'; }
+}
+
+function adminDescargarExcel(uid){
+  const n = new Date();
+  window.location.href = '/admin/descargar_excel/'+uid+'?ano='+n.getFullYear()+'&mes='+(n.getMonth()+1);
+}
 
 // Arrancar
 checkAuth();
