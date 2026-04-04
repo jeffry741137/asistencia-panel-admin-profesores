@@ -1,6 +1,8 @@
 flask
 flask-cors
-openpyxl
-pillow
 gunicorn
 psycopg2-binary
+openpyxl
+Pillow
+requests
+qrcode[pil]
